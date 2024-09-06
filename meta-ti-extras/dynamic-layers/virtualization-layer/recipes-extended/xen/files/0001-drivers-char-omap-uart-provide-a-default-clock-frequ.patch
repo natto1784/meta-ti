@@ -1,0 +1,46 @@
+From be9b405aef1c01bbb5af16b4ee519c648c26f556 Mon Sep 17 00:00:00 2001
+From: Amneesh Singh <a-singh21@ti.com>
+Date: Tue, 20 Aug 2024 13:52:03 +0530
+Subject: [PATCH] drivers: char: omap-uart: provide a default clock frequency
+
+Quite a few TI K3 devices do not have clock-frequency specified in their
+respective UART nodes. However hard-coding the frequency is not a
+solution as the function clock input can differ between SoCs. So, use a
+default frequency of 48MHz, which is the same as the linux default (see
+8250_omap.c), if the device tree does not specify it.
+
+Signed-off-by: Amneesh Singh <a-singh21@ti.com>
+Reviewed-by: Michal Orzel <michal.orzel@amd.com>
+---
+ xen/drivers/char/omap-uart.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/xen/drivers/char/omap-uart.c b/xen/drivers/char/omap-uart.c
+index 1079198a8d..9f73d822ad 100644
+--- a/xen/drivers/char/omap-uart.c
++++ b/xen/drivers/char/omap-uart.c
+@@ -48,6 +48,9 @@
+ /* System configuration register */
+ #define UART_OMAP_SYSC_DEF_CONF   0x0d   /* autoidle mode, wakeup is enabled */
+ 
++/* default clock frequency in hz */
++#define UART_OMAP_DEFAULT_CLK_SPEED 48000000
++
+ #define omap_read(uart, off)       readl((uart)->regs + ((off) << REG_SHIFT))
+ #define omap_write(uart, off, val) writel(val, \
+                                           (uart)->regs + ((off) << REG_SHIFT))
+@@ -322,8 +325,9 @@ static int __init omap_uart_init(struct dt_device_node *dev,
+     res = dt_property_read_u32(dev, "clock-frequency", &clkspec);
+     if ( !res )
+     {
+-        printk("omap-uart: Unable to retrieve the clock frequency\n");
+-        return -EINVAL;
++        printk("omap-uart: Unable to retrieve the clock frequency, defaulting to %uHz\n",
++               UART_OMAP_DEFAULT_CLK_SPEED);
++        clkspec = UART_OMAP_DEFAULT_CLK_SPEED;
+     }
+ 
+     uart->clock_hz = clkspec;
+-- 
+2.34.1
+

@@ -1,0 +1,117 @@
+From cf63548002f90ac7db048248ef7e34efd9ae7b20 Mon Sep 17 00:00:00 2001
+From: Amneesh Singh <a-singh21@ti.com>
+Date: Fri, 2 Aug 2024 13:24:27 +0530
+Subject: [PATCH] tools/helpers/init-dom0less: fix vcpu availability
+
+Currently, writing at cpu/<cpu>/availability in xenstore fails for a
+couple of reasons: a trailing slash in the path and the fact that
+cpupool isn't a bitmap but the cpupool id. This patch fixes this by
+just getting libxl_vcpuinfo for each dom0less domain.
+
+Signed-off-by: Amneesh Singh <a-singh21@ti.com>
+---
+ tools/helpers/init-dom0less.c | 44 ++++++++++++++++++++++++-----------
+ 1 file changed, 31 insertions(+), 13 deletions(-)
+
+diff --git a/tools/helpers/init-dom0less.c b/tools/helpers/init-dom0less.c
+index 2b51965fa7..3c51d48904 100644
+--- a/tools/helpers/init-dom0less.c
++++ b/tools/helpers/init-dom0less.c
+@@ -86,10 +86,9 @@ static bool do_xs_write_vm(struct xs_handle *xsh, xs_transaction_t t,
+  * The list was retrieved by running xenstore-ls on a corresponding
+  * domain started by xl/libxl.
+  */
+-static int create_xenstore(struct xs_handle *xsh,
+-                           libxl_dominfo *info, libxl_uuid uuid,
+-                           uint64_t xenstore_pfn,
+-                           evtchn_port_t xenstore_port)
++static int create_xenstore(struct xs_handle *xsh, libxl_dominfo *info,
++                           libxl_vcpuinfo *vcpuinfo, libxl_uuid uuid,
++                           uint64_t xenstore_pfn, evtchn_port_t xenstore_port)
+ {
+     domid_t domid;
+     unsigned int i;
+@@ -155,15 +154,20 @@ retry_transaction:
+     /* /domain */
+     if (!do_xs_write_dom(xsh, t, domid, "vm", vm_val_str)) goto err;
+     if (!do_xs_write_dom(xsh, t, domid, "name", dom_name_str)) goto err;
++
+     if (!do_xs_write_dom(xsh, t, domid, "cpu", "")) goto err;
+-    for (i = 0; i < info->vcpu_max_id; i++) {
+-        rc = snprintf(cpu_str, STR_MAX_LENGTH, "cpu/%u/availability/", i);
+-        if (rc < 0 || rc >= STR_MAX_LENGTH)
+-            goto err;
+-        rc = -EIO;
+-        if (!do_xs_write_dom(xsh, t, domid, cpu_str,
+-                             (info->cpupool & (1 << i)) ? "online" : "offline"))
+-            goto err;
++    if (!vcpuinfo) {
++        fprintf(stderr, "vcpu information unavailable, proceeding without it\n");
++    } else {
++        for (i = 0; i <= info->vcpu_max_id; i++) {
++            rc = snprintf(cpu_str, STR_MAX_LENGTH, "cpu/%u/availability", i);
++            if (rc < 0 || rc >= STR_MAX_LENGTH)
++                goto err;
++            rc = -EIO;
++            if (!do_xs_write_dom(xsh, t, domid, cpu_str,
++                                vcpuinfo[i].online ? "online" : "offline"))
++                goto err;
++        }
+     }
+ 
+     if (!do_xs_write_dom(xsh, t, domid, "memory", "")) goto err;
+@@ -213,7 +217,8 @@ err:
+ static int init_domain(struct xs_handle *xsh,
+                        struct xc_interface_core *xch,
+                        xenforeignmemory_handle *xfh,
+-                       libxl_dominfo *info)
++                       libxl_dominfo *info,
++                       libxl_vcpuinfo *vcpuinfo)
+ {
+     libxl_uuid uuid;
+     uint64_t xenstore_evtchn, xenstore_pfn;
+@@ -250,7 +255,8 @@ static int init_domain(struct xs_handle *xsh,
+     if (rc)
+         err(1, "gen_stub_json_config");
+ 
+-    rc = create_xenstore(xsh, info, uuid, xenstore_pfn, xenstore_evtchn);
++    rc = create_xenstore(xsh, info, vcpuinfo, uuid, xenstore_pfn,
++                         xenstore_evtchn);
+     if (rc)
+         err(1, "writing to xenstore");
+ 
+@@ -300,14 +306,24 @@ int main(int argc, char **argv)
+ 
+     for (i = 0; i < nb_vm; i++) {
+         domid_t domid = info[i].domid;
++        libxl_vcpuinfo *vcpuinfo;
++        int nb_vcpu = 0, nr_cpus = 0;
++
+ 
+         /* Don't need to check for Dom0 */
+         if (!domid)
+             continue;
+ 
++        vcpuinfo = libxl_list_vcpu(ctx, domid, &nb_vcpu, &nr_cpus);
++
++        if (!vcpuinfo) {
++          fprintf(stderr, "libxl_list_vcpu failed.\n");
++          nb_vcpu = 0;
++        }
++
+         printf("Checking domid: %u\n", domid);
+         if (!domain_exists(xsh, domid)) {
+-            rc = init_domain(xsh, xch, xfh, &info[i]);
++            rc = init_domain(xsh, xch, xfh, &info[i], vcpuinfo);
+             if (rc < 0) {
+                 fprintf(stderr, "init_domain failed.\n");
+                 goto out;
+@@ -315,6 +331,8 @@ int main(int argc, char **argv)
+         } else {
+             printf("Domain %u has already been initialized\n", domid);
+         }
++
++        libxl_vcpuinfo_list_free(vcpuinfo, nb_vcpu);
+     }
+ out:
+     libxl_dominfo_list_free(info, nb_vm);
